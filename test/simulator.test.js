@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { TelloSimulator } from "../server/simulator.js";
 
-function flyingSim() {
+function flyingSim(x = 0, z = 3) {
   const sim = new TelloSimulator();
+  sim.state.x = x;
+  sim.state.z = z;
   sim.execute("command");
   sim.execute("takeoff");
   return sim;
@@ -41,10 +43,12 @@ test("lands on the floor without returning to minimum flight height", () => {
 test("lands on an office desk and takes off relative to its surface", () => {
   const sim = new TelloSimulator();
   sim.state.x = -5;
-  sim.state.z = 1;
+  sim.state.z = 1.2;
+  sim.state.y = 0.77;
   sim.execute("command");
   sim.execute("takeoff");
   tick(sim, 150);
+  assert.ok(Math.abs(sim.snapshot().y - 1.97) < 0.01);
   assert.equal(sim.execute("land"), "ok");
   tick(sim, 200);
   assert.ok(Math.abs(sim.snapshot().y - 0.77) < 0.001);
@@ -164,8 +168,60 @@ test("validates network, motor, and sensor commands", () => {
   assert.equal(sim.execute("sdk?"), "20");
 });
 
-test("executes curve, jump, and flip commands", () => {
+test("accepts keepalive while in SDK mode", () => {
+  const sim = new TelloSimulator();
+  assert.match(sim.execute("keepalive"), /^error/);
+  sim.execute("command");
+  assert.equal(sim.execute("keepalive"), "ok");
+});
+
+test("reports ToF as distance to the surface below", () => {
   const sim = flyingSim();
+  tick(sim, 150);
+  assert.equal(sim.execute("tof?"), "120");
+  assert.equal(sim.snapshot().height, 120);
+  sim.state.x = -5;
+  sim.state.z = 1;
+  assert.equal(sim.execute("tof?"), "43");
+  assert.match(sim.telemetry(), /tof:43;h:43;/);
+});
+
+test("crashes when flying into office glass", () => {
+  const sim = flyingSim(0, 0);
+  tick(sim, 150);
+  assert.equal(sim.execute("right 400"), "ok");
+  tick(sim, 500);
+  assert.equal(sim.snapshot().collision, true);
+  assert.equal(sim.snapshot().crashed, true);
+  assert.equal(sim.snapshot().flying, false);
+  assert.ok(sim.snapshot().x < 3.8);
+});
+
+test("reset restores start pose and init modes", () => {
+  const sim = flyingSim(-2, 4);
+  tick(sim, 150);
+  sim.execute("streamon");
+  sim.state.battery = 42;
+  sim.state.yaw = 90;
+  sim.crash();
+  sim.reset();
+  const snap = sim.snapshot();
+  assert.equal(snap.x, -5);
+  assert.equal(snap.y, 0);
+  assert.equal(snap.z, 3);
+  assert.equal(snap.yaw, 0);
+  assert.equal(snap.sdkMode, false);
+  assert.equal(snap.streaming, false);
+  assert.equal(snap.flying, false);
+  assert.equal(snap.crashed, false);
+  assert.equal(snap.collision, false);
+  assert.equal(snap.battery, 100);
+  assert.equal(snap.flightTime, 0);
+  assert.equal(sim.motion, null);
+});
+
+test("executes curve, jump, and flip commands", () => {
+  const sim = flyingSim(-5, -4);
   tick(sim, 150);
   assert.equal(sim.execute("curve 50 0 0 100 50 0 40"), "ok");
   tick(sim, 400);

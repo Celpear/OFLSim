@@ -2,7 +2,7 @@ import express from "express";
 import dgram from "node:dgram";
 import http from "node:http";
 import { WebSocketServer } from "ws";
-import { TelloSimulator } from "./simulator.js";
+import { TelloSimulator, isBlockingCommand } from "./simulator.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const UDP_PORT = Number(process.env.TELLO_PORT || 8889);
@@ -18,11 +18,30 @@ app.get("/vendor/playcanvas/playcanvas.mjs", (_req, res) => res.sendFile(new URL
 
 app.get("/api/state", (_req, res) => res.json(sim.snapshot()));
 app.get("/api/telemetry", (_req, res) => res.type("text/plain").send(sim.telemetry()));
-app.get("/api/video-status", (_req, res) => res.json({ ...videoStats, clients: videoClients?.size ?? 0 }));
-app.post("/api/command", (req, res) => {
+
+function waitForMotion(timeoutMs = 25000) {
+  return new Promise(resolve => {
+    const start = Date.now();
+    const timer = setInterval(() => {
+      const timedOut = Date.now() - start > timeoutMs;
+      if (!sim.motion || timedOut) {
+        clearInterval(timer);
+        resolve(timedOut || sim.commandFailed || sim.state.crashed ? "error" : "ok");
+      }
+    }, 20);
+  });
+}
+
+async function runCommand(command) {
+  const response = sim.execute(command);
+  if (response !== "ok" || !isBlockingCommand(command) || !sim.motion) return response;
+  return waitForMotion();
+}
+
+app.post("/api/command", async (req, res) => {
   const command = req.body?.command;
   if (!command) return res.status(400).json({ error: "command is required" });
-  const response = sim.execute(command);
+  const response = await runCommand(command);
   res.status(response.startsWith("error") ? 400 : 200).json({ command, response, state: sim.snapshot() });
 });
 app.post("/api/reset", (_req, res) => { sim.reset(); res.json(sim.snapshot()); });
@@ -30,9 +49,10 @@ app.post("/api/reset", (_req, res) => { sim.reset(); res.json(sim.snapshot()); }
 const udp = dgram.createSocket("udp4");
 const telemetryClients = new Map();
 const videoClients = new Map();
-udp.on("message", (message, remote) => {
+app.get("/api/video-status", (_req, res) => res.json({ ...videoStats, clients: videoClients.size }));
+udp.on("message", async (message, remote) => {
   const command = message.toString().trim();
-  const response = sim.execute(command);
+  const response = await runCommand(command);
   udp.send(response, remote.port, remote.address);
   telemetryClients.set(`${remote.address}:8890`, { address: remote.address, port: 8890, seen: Date.now() });
   if (command.toLowerCase() === "streamon") videoClients.set(remote.address, { address: remote.address, port: 11111, seen: Date.now() });

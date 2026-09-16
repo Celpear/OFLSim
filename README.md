@@ -2,8 +2,6 @@
 
 **Office Flight Lab** — a local Tello-compatible drone simulator. Fly through a PlayCanvas office from the browser or from existing Tello SDK clients over UDP.
 
-See [PROGRESS.md](./PROGRESS.md) for what works, what doesn’t, and what’s next.
-
 ## Requirements
 
 - Node.js 20 or newer
@@ -41,6 +39,7 @@ PORT=4000 TELLO_PORT=9000 pnpm start
 2. Click **TAKE OFF**.
 3. Use the pads or type Tello commands in the terminal.
 4. Click **LAND** when you’re done.
+5. Click **RESET** to put the drone back at the start pad and restore the initial SDK, battery, and stream state.
 
 Drag the scene to look around. `WASD` moves, `Q`/`E` go down/up, `Shift` speeds you up, scroll changes the camera speed.
 
@@ -158,6 +157,7 @@ Send UTF-8 commands to UDP port `8889`. Replies go back to the sender’s source
 | Command | Arguments | Behavior |
 | --- | --- | --- |
 | `command` | none | Enter SDK mode |
+| `keepalive` | none | Reset the 15-second SDK landing timer |
 | `streamon`, `streamoff` | none | Enable or disable the simulated FPV camera |
 | `takeoff` | none | Take off to about 1.2 m |
 | `land` | none | Land on the floor or the table under the drone |
@@ -181,7 +181,9 @@ Send UTF-8 commands to UDP port `8889`. Replies go back to the sender’s source
 
 Queries: `battery?`, `time?`, `speed?`, `height?`, `temp?`, `attitude?`, `baro?`, `tof?`, `wifi?`, `acceleration?`, `sn?`, `sdk?`.
 
-Discrete moves return a busy error until they finish. `stop` and `emergency` still work. If nothing arrives for 15 seconds in the air, or battery hits 10%, it lands on whatever surface is underneath.
+Discrete moves return a busy error until they finish. `stop` and `emergency` still work. UDP and HTTP hold the `ok` until the move actually completes, like a real Tello. If nothing arrives for 15 seconds in the air, or battery hits 10%, it lands on whatever surface is underneath. `keepalive` resets that timer.
+
+Walls, glass, desks, chairs, the conference table, sofa, and plants are solid. Hitting one stops the aircraft and drops it onto the surface below. `tof?` / `height?` report the downward distance to that surface, not the absolute altitude.
 
 Mission Pad telemetry adds `mid`, `x`, `y`, `z`, and `mpry`. The office has pads `m1`–`m8`. `wifi` / `ap` only change simulator state, not the host network.
 
@@ -230,10 +232,9 @@ public/               Browser app and PlayCanvas scene
 server/index.js       HTTP, WebSocket, UDP
 server/simulator.js   Commands, physics, telemetry
 test/                 Unit tests
-PROGRESS.md           Status and remaining work
 ```
 
-This is not a complete Tello SDK 3.0 clone. Gaps live in [PROGRESS.md](./PROGRESS.md).
+This is not a complete Tello SDK 3.0 clone. The public SDK 2.0 flight path works; some firmware-specific responses and extra maps are still missing.
 
 ## Office flight test
 

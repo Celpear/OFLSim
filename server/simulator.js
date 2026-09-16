@@ -4,13 +4,44 @@ const VERTICAL_ACCELERATION = 1.2;
 const YAW_ACCELERATION = 180;
 const MAX_YAW_RATE = 100;
 const MAX_TILT = 9;
-const LANDING_SURFACES = [
-  { x: -5, z: -2, halfWidth: 1.25, halfDepth: 0.55, height: 0.77 },
-  { x: -1.5, z: -2, halfWidth: 1.25, halfDepth: 0.55, height: 0.77 },
-  { x: -5, z: 1, halfWidth: 1.25, halfDepth: 0.55, height: 0.77 },
-  { x: -1.5, z: 1, halfWidth: 1.25, halfDepth: 0.55, height: 0.77 },
-  { x: 6, z: 0, halfWidth: 1.6, halfDepth: 1.6, height: 0.8 }
+const GRAVITY = 9;
+const DRONE = { hx: 0.28, hy: 0.16, hz: 0.28 };
+const ROOM = { minx: -8.7, maxx: 8.7, miny: 0, maxy: 3.5, minz: -5.7, maxz: 5.7 };
+const BLOCKING_OPS = new Set(["takeoff", "land", "up", "down", "left", "right", "forward", "back", "cw", "ccw", "go", "curve", "jump", "flip"]);
+
+function aabb(x, y, z, sx, sy, sz, landing = false) {
+  return {
+    minx: x - sx / 2,
+    maxx: x + sx / 2,
+    miny: y - sy / 2,
+    maxy: y + sy / 2,
+    minz: z - sz / 2,
+    maxz: z + sz / 2,
+    landing
+  };
+}
+
+function overlaps(a, b) {
+  return a.minx < b.maxx && a.maxx > b.minx && a.miny < b.maxy && a.maxy > b.miny && a.minz < b.maxz && a.maxz > b.minz;
+}
+
+const OBSTACLES = [
+  aabb(0, 2, -6, 18, 4, 0.12),
+  aabb(-9, 2, 0, 0.12, 4, 12),
+  ...[[-5, -2], [-1.5, -2], [-5, 1], [-1.5, 1]].flatMap(([x, z]) => [
+    aabb(x, 0.73, z, 2.5, 0.08, 1.1, true),
+    aabb(x, 1.25, z - 0.25, 0.85, 0.55, 0.06),
+    aabb(x, 0.48, z + 1, 0.72, 0.12, 0.72),
+    aabb(x, 0.82, z + 1.3, 0.72, 0.75, 0.1)
+  ]),
+  aabb(6, 0.75, 0, 3.2, 0.1, 3.2, true),
+  ...[[4, 0], [8, 0], [5, -2], [7, -2], [5, 2], [7, 2]].map(([x, z]) => aabb(x, 0.45, z, 0.65, 0.15, 0.65)),
+  aabb(-5, 0.42, 4.6, 3.2, 0.55, 1.25, true),
+  aabb(-5, 0.85, 5.05, 3.2, 0.85, 0.25),
+  ...[-3.5, -1.5, 0.5, 2.5, 4.5].map(z => aabb(3.8, 1.45, z, 0.06, 2.9, 1.75)),
+  ...[[-8, 5.2], [2.8, -5.2], [8.2, 5.1]].map(([x, z]) => aabb(x, 0.75, z, 0.7, 1.5, 0.7))
 ];
+
 const MISSION_PADS = {
   m1: { x: -7, y: 0, z: -4 },
   m2: { x: -3.5, y: 0, z: -4 },
@@ -23,7 +54,11 @@ const MISSION_PADS = {
 };
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-const round = (value, digits = 2) => Number(value.toFixed(digits));
+
+export function isBlockingCommand(command) {
+  const op = String(command).trim().toLowerCase().split(/\s+/)[0];
+  return BLOCKING_OPS.has(op);
+}
 
 export class TelloSimulator {
   constructor() {
@@ -35,6 +70,7 @@ export class TelloSimulator {
       sdkMode: false,
       streaming: false,
       flying: false,
+      crashed: false,
       x: -5,
       y: 0,
       z: 3,
@@ -61,19 +97,94 @@ export class TelloSimulator {
       accessPoint: null
     };
     this.motion = null;
+    this.commandFailed = false;
     this.rc = { lr: 0, fb: 0, ud: 0, yaw: 0, expires: 0 };
     this.lastCommandAt = Date.now();
   }
 
+  groundClearance() {
+    return Math.max(0, this.state.y - this.landingHeightAt(this.state.x, this.state.z));
+  }
+
   snapshot() {
-    return { ...this.state, height: Math.round(this.state.y * 100), tof: Math.round(this.state.y * 100) };
+    const tof = Math.round(this.groundClearance() * 100);
+    return { ...this.state, height: tof, tof };
   }
 
   landingHeightAt(x, z) {
-    return LANDING_SURFACES.reduce((height, surface) => {
-      const inside = Math.abs(x - surface.x) <= surface.halfWidth && Math.abs(z - surface.z) <= surface.halfDepth;
-      return inside ? Math.max(height, surface.height) : height;
-    }, 0);
+    let height = 0;
+    for (const obstacle of OBSTACLES) {
+      if (!obstacle.landing) continue;
+      if (x >= obstacle.minx && x <= obstacle.maxx && z >= obstacle.minz && z <= obstacle.maxz) {
+        height = Math.max(height, obstacle.maxy);
+      }
+    }
+    return height;
+  }
+
+  droneBox(x = this.state.x, y = this.state.y, z = this.state.z) {
+    return {
+      minx: x - DRONE.hx,
+      maxx: x + DRONE.hx,
+      miny: y,
+      maxy: y + DRONE.hy,
+      minz: z - DRONE.hz,
+      maxz: z + DRONE.hz
+    };
+  }
+
+  failCommand() {
+    this.commandFailed = true;
+    this.motion = null;
+    this.rc.expires = 0;
+  }
+
+  crash() {
+    const s = this.state;
+    this.failCommand();
+    s.collision = true;
+    s.crashed = true;
+    s.flying = false;
+    s.motorsRunning = false;
+    s.vx = s.vz = 0;
+    s.yawRate = 0;
+    s.flipPitch = 0;
+    s.flipRoll = 0;
+  }
+
+  settleOn(height) {
+    const s = this.state;
+    s.y = height;
+    s.vx = s.vy = s.vz = 0;
+    s.flying = false;
+    s.motorsRunning = false;
+    this.motion = null;
+  }
+
+  resolveCollisions(previous) {
+    const s = this.state;
+    if (s.x < ROOM.minx || s.x > ROOM.maxx || s.z < ROOM.minz || s.z > ROOM.maxz || s.y > ROOM.maxy) {
+      s.x = clamp(s.x, ROOM.minx, ROOM.maxx);
+      s.y = Math.min(s.y, ROOM.maxy);
+      s.z = clamp(s.z, ROOM.minz, ROOM.maxz);
+      this.crash();
+      return;
+    }
+
+    const box = this.droneBox();
+    for (const obstacle of OBSTACLES) {
+      if (!overlaps(box, obstacle)) continue;
+      const fromAbove = previous.y >= obstacle.maxy - 0.04 && s.vy <= 0.15;
+      if (obstacle.landing && fromAbove) {
+        this.settleOn(obstacle.maxy);
+        continue;
+      }
+      s.x = previous.x;
+      s.y = previous.y;
+      s.z = previous.z;
+      this.crash();
+      return;
+    }
   }
 
   detectedMissionPad() {
@@ -103,8 +214,9 @@ export class TelloSimulator {
 
   tick(dt) {
     const s = this.state;
+    const previous = { x: s.x, y: s.y, z: s.z };
     const previousVelocity = { x: s.vx, y: s.vy, z: s.vz };
-    s.collision = false;
+    if (!s.crashed) s.collision = false;
     if (s.flying) {
       s.flightTime += dt;
       s.battery = Math.max(0, s.battery - dt / 180);
@@ -148,6 +260,9 @@ export class TelloSimulator {
       desired.x = localX * Math.cos(angle) - localZ * Math.sin(angle);
       desired.z = localX * Math.sin(angle) + localZ * Math.cos(angle);
       desired.y = this.rc.ud / 100 * 1.5;
+    } else if (!s.flying && s.y > this.landingHeightAt(s.x, s.z) + 0.008) {
+      desired.y = -8;
+      acceleration = GRAVITY;
     }
 
     const velocityDelta = { x: desired.x - s.vx, y: desired.y - s.vy, z: desired.z - s.vz };
@@ -208,21 +323,22 @@ export class TelloSimulator {
 
     const landingHeight = this.motion?.landing ? this.motion.target.y : null;
     if (landingHeight !== null && s.y <= landingHeight + 0.008) {
-      s.y = landingHeight;
-      s.vx = s.vy = s.vz = 0;
-      s.flying = false;
-      this.motion = null;
+      this.settleOn(landingHeight);
     }
 
-    const before = [s.x, s.y, s.z];
-    s.x = clamp(s.x, -8.7, 8.7);
-    const isVerticalTransition = this.motion?.target?.y !== undefined;
-    s.y = clamp(s.y, s.flying && !isVerticalTransition ? 0.25 : 0, 3.5);
-    s.z = clamp(s.z, -5.7, 5.7);
-    if (before[0] !== s.x || before[1] !== s.y || before[2] !== s.z) {
-      s.collision = true;
-      this.motion = null;
+    if (!s.flying && !this.motion) {
+      const floor = this.landingHeightAt(s.x, s.z);
+      if (s.y < floor) s.y = floor;
+      if (s.y <= floor + 0.008) {
+        s.y = floor;
+        s.vy = 0;
+      }
     }
+
+    const isVerticalTransition = this.motion?.target?.y !== undefined;
+    if (s.flying && !isVerticalTransition) s.y = Math.max(s.y, 0.25);
+    this.resolveCollisions(previous);
+
     s.barometer = s.y * 100;
     s.yaw = ((s.yaw % 360) + 360) % 360;
   }
@@ -247,22 +363,31 @@ export class TelloSimulator {
       "battery?": () => `${Math.round(s.battery)}`,
       "time?": () => `${Math.round(s.flightTime)}`,
       "speed?": () => `${Math.round(s.speed)}`,
-      "height?": () => `${Math.round(s.y * 100)}`,
+      "height?": () => `${Math.round(this.groundClearance() * 100)}`,
       "temp?": () => `${Math.round(s.temperature)}~${Math.round(s.temperature + 3)}`,
       "attitude?": () => `pitch:${Math.round(s.pitch)};roll:${Math.round(s.roll)};yaw:${Math.round(s.yaw)};`,
       "baro?": () => `${s.barometer.toFixed(2)}`,
       "acceleration?": () => "0.00;0.00;-1000.00;",
-      "tof?": () => `${Math.round(s.y * 100)}`,
+      "tof?": () => `${Math.round(this.groundClearance() * 100)}`,
       "wifi?": () => "90",
       "sn?": () => "OFLSIM001",
       "sdk?": () => "20"
     };
     if (query[op]) return query[op]();
     if (op === "command") { s.sdkMode = true; this.lastCommandAt = Date.now(); return "ok"; }
-    if (op === "emergency") { this.motion = null; s.flying = false; s.y = 0; s.vx = s.vy = s.vz = s.yawRate = 0; return "ok"; }
+    if (op === "emergency") {
+      this.failCommand();
+      s.flying = false;
+      s.crashed = false;
+      s.collision = false;
+      s.y = this.landingHeightAt(s.x, s.z);
+      s.vx = s.vy = s.vz = s.yawRate = 0;
+      return "ok";
+    }
     if (!s.sdkMode) return "error Not in SDK mode; send 'command' first";
     this.lastCommandAt = Date.now();
 
+    if (op === "keepalive") return "ok";
     if (op === "streamon") { s.streaming = true; return "ok"; }
     if (op === "streamoff") { s.streaming = false; return "ok"; }
     if (op === "mon") { s.missionPadEnabled = true; return "ok"; }
@@ -284,14 +409,23 @@ export class TelloSimulator {
 
     if (op === "takeoff") {
       if (s.flying) return "error Already flying";
-      s.flying = true; this.moveTo({ y: Math.min(3.5, s.y + 1.2) }); return "ok";
+      s.crashed = false;
+      s.collision = false;
+      s.flying = true;
+      this.commandFailed = false;
+      this.moveTo({ y: Math.min(3.5, s.y + 1.2) });
+      return "ok";
     }
     if (op === "land") {
       if (!s.flying) return "error Not flying";
+      this.commandFailed = false;
       this.moveTo({ y: this.landingHeightAt(s.x, s.z) }, this.state.speed / 100, true);
       return "ok";
     }
-    if (op === "stop") { this.motion = null; this.rc.expires = 0; return "ok"; }
+    if (op === "stop") {
+      this.failCommand();
+      return "ok";
+    }
     if (op === "speed") { const v = Number(args[0]); if (v < 10 || v > 100) return "error"; s.speed = v; return "ok"; }
     if (op === "rc") {
       if (!s.flying || args.length !== 4) return "error";
@@ -309,16 +443,23 @@ export class TelloSimulator {
     const directional = {
       up: { y: s.y + meters }, down: { y: s.y - meters },
       right: { x: s.x + Math.cos(rad) * meters, z: s.z + Math.sin(rad) * meters },
-      left: { x: s.x - Math.cos(rad) * meters, z: s.z - Math.sin(rad) * meters },
+      left: { x: s.x - Math.cos(rad) * meters, z: s.z + Math.sin(rad) * meters },
       forward: { x: s.x - Math.sin(rad) * meters, z: s.z - Math.cos(rad) * meters },
       back: { x: s.x + Math.sin(rad) * meters, z: s.z + Math.cos(rad) * meters }
     };
-    if (directional[op] && cm >= 20 && cm <= 500) { this.moveTo(directional[op]); return "ok"; }
+    if (directional[op] && cm >= 20 && cm <= 500) {
+      this.commandFailed = false;
+      this.moveTo(directional[op]);
+      return "ok";
+    }
     if ((op === "cw" || op === "ccw") && cm >= 1 && cm <= 360) {
-      this.moveTo({ yaw: s.yaw + (op === "cw" ? -cm : cm) }); return "ok";
+      this.commandFailed = false;
+      this.moveTo({ yaw: s.yaw + (op === "cw" ? -cm : cm) });
+      return "ok";
     }
     if (op === "flip" && ["l", "r", "f", "b"].includes(args[0])) {
       const direction = args[0];
+      this.commandFailed = false;
       this.motion = { flip: { axis: ["f", "b"].includes(direction) ? "pitch" : "roll", sign: ["f", "r"].includes(direction) ? 1 : -1 }, elapsed: 0 };
       return "ok";
     }
@@ -328,7 +469,9 @@ export class TelloSimulator {
       const padTarget = args[4] ? this.padTarget(args[4], x, y, z) : null;
       if (args[4] && !padTarget) return "error";
       const target = padTarget || { x: s.x + (x * Math.cos(rad) - y * Math.sin(rad)) / 100, y: s.y + z / 100, z: s.z + (x * Math.sin(rad) + y * Math.cos(rad)) / 100 };
-      this.moveTo(target, speed / 100); return "ok";
+      this.commandFailed = false;
+      this.moveTo(target, speed / 100);
+      return "ok";
     }
     if (op === "curve" && (args.length === 7 || args.length === 8)) {
       const values = args.slice(0, 7).map(Number);
@@ -353,6 +496,7 @@ export class TelloSimulator {
         const a = (1 - t) ** 2, b = 2 * (1 - t) * t, c = t ** 2;
         return { x: a * start.x + b * control.x + c * end.x, y: a * start.y + b * control.y + c * end.y, z: a * start.z + b * control.z + c * end.z };
       });
+      this.commandFailed = false;
       this.movePath(points, speed / 100);
       return "ok";
     }
@@ -361,6 +505,7 @@ export class TelloSimulator {
       const destination = this.padTarget(args[6], 0, 0, z);
       const first = this.padTarget(args[5], x, y, z);
       if (!first || !destination || speed < 10 || speed > 100 || ![x, y, z, yaw].every(Number.isFinite)) return "error";
+      this.commandFailed = false;
       this.movePath([first, destination], speed / 100);
       s.yaw = ((yaw % 360) + 360) % 360;
       return "ok";
@@ -371,7 +516,8 @@ export class TelloSimulator {
   telemetry() {
     const s = this.state;
     const pad = this.detectedMissionPad();
+    const tof = Math.round(this.groundClearance() * 100);
     const mission = s.missionPadEnabled ? `mid:${pad ? Number(pad.id.slice(1)) : -1};x:${pad ? Math.round((s.x - pad.x) * 100) : 0};y:${pad ? Math.round((s.z - pad.z) * 100) : 0};z:${pad ? Math.round((s.y - pad.y) * 100) : 0};mpry:0,0,${Math.round(s.yaw)};` : "";
-    return `${mission}pitch:${Math.round(s.pitch)};roll:${Math.round(s.roll)};yaw:${Math.round(s.yaw)};vgx:${Math.round(s.vx * 100)};vgy:${Math.round(s.vz * 100)};vgz:${Math.round(s.vy * 100)};templ:${Math.round(s.temperature)};temph:${Math.round(s.temperature + 3)};tof:${Math.round(s.y * 100)};h:${Math.round(s.y * 100)};bat:${Math.round(s.battery)};baro:${s.barometer.toFixed(2)};time:${Math.round(s.flightTime)};agx:0;agy:0;agz:-1000;`;
+    return `${mission}pitch:${Math.round(s.pitch)};roll:${Math.round(s.roll)};yaw:${Math.round(s.yaw)};vgx:${Math.round(s.vx * 100)};vgy:${Math.round(s.vz * 100)};vgz:${Math.round(s.vy * 100)};templ:${Math.round(s.temperature)};temph:${Math.round(s.temperature + 3)};tof:${tof};h:${tof};bat:${Math.round(s.battery)};baro:${s.barometer.toFixed(2)};time:${Math.round(s.flightTime)};agx:0;agy:0;agz:-1000;`;
   }
 }

@@ -62,7 +62,7 @@ def relay_frames(decoder, player, result, requested, ready):
             ready.set()
 
 
-def send(client, target, command, timeout=3.0):
+def send(client, target, command, timeout=10.0):
     client.settimeout(timeout)
     client.sendto(command.encode(), target)
     response, _ = client.recvfrom(1024)
@@ -78,15 +78,14 @@ def run(host, port, time_scale, show_video):
     client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     route = [
         ("speed 100", 0.1),
-        ("takeoff", 2.4),
-        ("up 50", 1.7),
-        ("forward 150", 2.4),
-        ("right 250", 3.4),
-        ("cw 90", 1.8),
-        ("forward 200", 2.9),
-        ("ccw 90", 1.8),
-        ("left 250", 3.4),
-        ("back 150", 2.4),
+        ("takeoff", 0.2),
+        ("up 50", 0.2),
+        ("right 200", 0.2),
+        ("cw 90", 0.2),
+        ("ccw 90", 0.2),
+        ("left 200", 0.2),
+        ("back 50", 0.2),
+        ("forward 50", 0.2),
     ]
     airborne = False
     player = None

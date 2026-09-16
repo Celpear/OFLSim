@@ -134,10 +134,16 @@ function buildOffice() {
   box("rug", [-2.5, 0.02, 4.4], [5, 0.03, 2.2], mats.teal);
 
   for (const [x, z] of [[-8, 5.2], [2.8, -5.2], [8.2, 5.1]]) {
-    cylinder("pot", [x, 0.3, z], [0.5, 0.6, 0.5], mats.pot);
+    const plant = new pc.Entity("plant");
+    plant.setPosition(x, 0, z);
+    app.root.addChild(plant);
+    cylinder("pot", [0, 0.3, 0], [0.5, 0.6, 0.5], mats.pot, plant);
     for (let i = 0; i < 5; i++) {
-      const leaf = box("leaf", [x, 0.9 + i * 0.06, z], [0.18, 1, 0.38], mats.plant);
-      leaf.setEulerAngles(0, i * 72, 25);
+      const stem = new pc.Entity("stem");
+      stem.setLocalEulerAngles(0, i * 72, 0);
+      plant.addChild(stem);
+      const leaf = box("leaf", [0, 0.95, 0.12], [0.16, 0.95, 0.32], mats.plant, stem);
+      leaf.setLocalEulerAngles(28, 0, 0);
     }
   }
 
@@ -192,12 +198,12 @@ function buildDrone() {
   });
   glow.setLocalPosition(0, 0, -0.25);
   drone.addChild(glow);
-  return { drone, rotors };
+  return { drone, rotors, glow };
 }
 
 buildSky();
 buildOffice();
-const { drone, rotors } = buildDrone();
+const { drone, rotors, glow } = buildDrone();
 
 const camera = new pc.Entity("camera");
 camera.addComponent("camera", { clearColor: new pc.Color(0.025, 0.045, 0.05), fov: 52 });
@@ -330,14 +336,20 @@ app.on("update", dt => {
   if (target.flying || target.motorsRunning) {
     rotors.forEach((rotor, index) => rotor.rotateLocal(0, (index % 2 ? 1 : -1) * dt * 1800, 0));
   }
+  glow.light.color.set(...(target.collision ? [1, 0.22, 0.16] : [0.2, 1, 0.7]));
 
   const yaw = target.yaw * Math.PI / 180;
   fpvCamera.setPosition(target.x - Math.sin(yaw) * 0.18, target.y + 0.16, target.z - Math.cos(yaw) * 0.18);
   fpvCamera.setEulerAngles((target.pitch || 0) - 7, target.yaw, target.roll || 0);
 
-  const lookYaw = view.yaw * Math.PI / 180;
-  const forward = new pc.Vec3(-Math.sin(lookYaw), 0, -Math.cos(lookYaw));
-  const right = new pc.Vec3(Math.cos(lookYaw), 0, -Math.sin(lookYaw));
+  const forward = viewDirection();
+  const right = new pc.Vec3().cross(forward, pc.Vec3.UP);
+  if (right.lengthSq() < 1e-8) {
+    const lookYaw = view.yaw * Math.PI / 180;
+    right.set(Math.cos(lookYaw), 0, -Math.sin(lookYaw));
+  } else {
+    right.normalize();
+  }
   const movement = new pc.Vec3();
   if (keys.has("KeyW")) movement.add(forward);
   if (keys.has("KeyS")) movement.sub(forward);
@@ -376,6 +388,20 @@ document.querySelector("[data-toolbar-toggle]").onclick = () => {
   document.querySelector(".ui-toolbar").classList.toggle("collapsed");
 };
 
+function applyState(state) {
+  target = state;
+  $("fpv").classList.toggle("active", target.streaming);
+  $("fpv").querySelector("em").textContent = target.streaming ? "STREAMING" : "READY";
+  document.querySelector("[data-stream]").textContent = target.streaming ? "STOP STREAM" : "VIDEO STREAM";
+  $("height").textContent = `${target.y.toFixed(2)} m`;
+  $("battery").textContent = `${Math.round(target.battery)}%`;
+  const seconds = Math.round(target.flightTime);
+  $("time").textContent = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+  $("yaw").textContent = `${String(Math.round(target.yaw)).padStart(3, "0")}°`;
+  $("speed").textContent = `${Math.hypot(target.vx || 0, target.vy || 0, target.vz || 0).toFixed(2)} m/s`;
+  $("coords").textContent = `X ${target.x.toFixed(2)}   Y ${target.y.toFixed(2)}   Z ${target.z.toFixed(2)}`;
+}
+
 async function send(command) {
   try {
     const response = await fetch("/api/command", {
@@ -400,6 +426,23 @@ document.querySelector("[data-stream]").onclick = () => {
   send(target.streaming ? "streamoff" : "streamon");
 };
 
+document.querySelector("[data-reset]").onclick = async () => {
+  try {
+    const response = await fetch("/api/reset", { method: "POST" });
+    const state = await response.json();
+    stopVideo();
+    droneAttitude.pitch = 0;
+    droneAttitude.yaw = 0;
+    droneAttitude.roll = 0;
+    drone.setPosition(state.x, state.y + 0.16, state.z);
+    drone.setEulerAngles(0, 0, 0);
+    applyState(state);
+    log("RESET", "ok");
+  } catch {
+    log("ERR", "Reset failed");
+  }
+};
+
 $("terminal").onsubmit = event => {
   event.preventDefault();
   const command = $("command").value.trim();
@@ -421,17 +464,7 @@ socket.onclose = () => {
 socket.onmessage = event => {
   const message = JSON.parse(event.data);
   if (message.type !== "state") return;
-  target = message.data;
-  $("fpv").classList.toggle("active", target.streaming);
-  $("fpv").querySelector("em").textContent = target.streaming ? "STREAMING" : "READY";
-  document.querySelector("[data-stream]").textContent = target.streaming ? "STOP STREAM" : "VIDEO STREAM";
-  $("height").textContent = `${target.y.toFixed(2)} m`;
-  $("battery").textContent = `${Math.round(target.battery)}%`;
-  const seconds = Math.round(target.flightTime);
-  $("time").textContent = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-  $("yaw").textContent = `${String(Math.round(target.yaw)).padStart(3, "0")}°`;
-  $("speed").textContent = `${Math.hypot(target.vx, target.vy, target.vz).toFixed(2)} m/s`;
-  $("coords").textContent = `X ${target.x.toFixed(2)}   Y ${target.y.toFixed(2)}   Z ${target.z.toFixed(2)}`;
+  applyState(message.data);
 };
 
 let encoder = null;
