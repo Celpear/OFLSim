@@ -9,6 +9,7 @@
 - A modern browser with WebGL
 - UDP ports `8889`, `8890`, and `11111` free if you want to talk to it like a real Tello
 - `ffmpeg` and `ffplay` if you run the Python flight test with the FPV window
+- Python 3 and `djitellopy` if you run the SDK smoke test (`pip install -r scripts/requirements.txt`)
 
 ## Install and run
 
@@ -245,3 +246,14 @@ python3 scripts/flight_test.py
 ```
 
 It turns on the H.264 stream, decodes with `ffmpeg`, optionally shows `ffplay`, saves a PNG under `temp/`, rejects black frames, flies a loop around the office, checks telemetry, lands, and stops the stream. The browser has to stay open because PlayCanvas is the renderer. `--no-video-window` is for CI; `--host` / `--port` if the server isn’t on the defaults.
+
+## SDK smoke test
+
+Keep the simulator running, then:
+
+```bash
+pip install -r scripts/requirements.txt
+python3 scripts/sdk_smoke_test.py
+```
+
+This talks to OFLSim through [djitellopy](https://github.com/damiafuentes/DJITelloPy): `connect`, takeoff, state telemetry on port `8890`, a short move, `streamon` / `streamoff`, and land. It does not decode FPV frames, so the browser tab is optional. `--host` / `--port` / `--http-port` if the server isn’t on the defaults.
