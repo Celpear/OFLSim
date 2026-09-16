@@ -1,0 +1,17 @@
+{
+  "name": "oflsim",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OFLSim — Office Flight Lab. Local Tello-compatible drone simulator.",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server/index.js",
+    "start": "node server/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "playcanvas": "^2.9.2",
+    "ws": "^8.18.3"
+  }
+}

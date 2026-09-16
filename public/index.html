@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Office Flight Lab</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+
+<body>
+  <canvas id="application"></canvas>
+
+  <nav class="ui-toolbar" aria-label="Overlay visibility">
+    <button class="master" data-toolbar-toggle>UI</button>
+    <button data-ui-toggle=".telemetry">TELEMETRY</button>
+    <button data-ui-toggle=".controls">CONTROLS</button>
+    <button data-ui-toggle=".hint">HELP</button>
+    <button data-ui-toggle="#fpv">FPV</button>
+  </nav>
+
+  <div id="fpv" class="fpv-panel">
+    <div>
+      <span></span>
+      <b>FPV CAMERA</b>
+      <em>READY</em>
+    </div>
+  </div>
+
+  <header>
+    <div>
+      <span class="eyebrow">OFLSim</span>
+      <h1>Office Flight Lab</h1>
+    </div>
+    <div id="connection" class="status">CONNECTING…</div>
+  </header>
+
+  <aside class="panel telemetry">
+    <div class="panel-title">LIVE TELEMETRY <span class="pulse"></span></div>
+    <div class="metric"><span>ALTITUDE</span><strong id="height">0.00 m</strong></div>
+    <div class="metric"><span>BATTERY</span><strong id="battery">100%</strong></div>
+    <div class="metric"><span>FLIGHT TIME</span><strong id="time">00:00</strong></div>
+    <div class="metric"><span>YAW</span><strong id="yaw">000°</strong></div>
+    <div class="metric"><span>SPEED</span><strong id="speed">0.00 m/s</strong></div>
+    <div class="coordinates" id="coords">X −5.00 &nbsp; Y 0.00 &nbsp; Z 3.00</div>
+  </aside>
+
+  <section class="panel controls">
+    <div class="panel-title">FLIGHT CONTROL</div>
+    <div class="command-row">
+      <button data-command="command">SDK MODE</button>
+      <button class="accent" data-command="takeoff">TAKE OFF</button>
+      <button data-command="land">LAND</button>
+      <button data-stream>VIDEO STREAM</button>
+    </div>
+    <div class="flight-grid">
+      <div class="pad move">
+        <span>MOVE</span>
+        <div class="arrow-pad">
+          <button class="arrow-up" data-repeat="forward 30">↑</button>
+          <button class="arrow-left" data-repeat="left 30">←</button>
+          <button class="arrow-down" data-repeat="back 30">↓</button>
+          <button class="arrow-right" data-repeat="right 30">→</button>
+        </div>
+      </div>
+      <div class="pad altitude">
+        <button data-repeat="up 30">＋</button>
+        <span>ALT</span>
+        <button data-repeat="down 30">−</button>
+      </div>
+      <div class="pad yawpad">
+        <button data-repeat="ccw 30">↶</button>
+        <span>YAW</span>
+        <button data-repeat="cw 30">↷</button>
+      </div>
+    </div>
+    <form id="terminal">
+      <span>›</span>
+      <input id="command" autocomplete="off" placeholder="Tello command, e.g. go 100 0 50 60" />
+      <button>SEND</button>
+    </form>
+    <div id="log">
+      <div><i>SYS</i> Office Flight Lab ready — send "command" first.</div>
+    </div>
+  </section>
+
+  <div class="hint">DRAG: LOOK &nbsp;·&nbsp; WASD: MOVE &nbsp;·&nbsp; Q/E: DOWN/UP &nbsp;·&nbsp; SHIFT: BOOST
+    &nbsp;·&nbsp; SCROLL: SPEED</div>
+  <script type="module" src="/app.js"></script>
+</body>
+
+</html>
