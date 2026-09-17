@@ -2,6 +2,8 @@
 
 **Office Flight Lab** — a local Tello-compatible drone simulator. Fly through a PlayCanvas office from the browser or from existing Tello SDK clients over UDP.
 
+![OFLSim preview](assets/preview.mp4)
+
 ## Requirements
 
 - Node.js 20 or newer
